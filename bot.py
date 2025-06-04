@@ -235,7 +235,7 @@ async def on_startup():
     await application.initialize()
     await application.start()
    
-WEBHOOK_URL = os.environ.get("WEBHOOK_URL")  # обязательно добавь в Render Environment
+    WEBHOOK_URL = os.environ.get("WEBHOOK_URL")  # обязательно добавь в Render Environment
 
 if not WEBHOOK_URL:
     raise RuntimeError("WEBHOOK_URL не задан")
