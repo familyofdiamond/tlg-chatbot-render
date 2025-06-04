@@ -230,20 +230,6 @@ application.add_handler(CallbackQueryHandler(handle_callback))
 application.add_handler(MessageHandler(filters.StatusUpdate.NEW_CHAT_MEMBERS, greet_user))
 application.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), count_messages))
 
-@app.on_event("startup")
-async def on_startup():
-    await application.initialize()
-    await application.start()
-   
-    WEBHOOK_URL = os.environ.get("WEBHOOK_URL")  # обязательно добавь в Render Environment
-
-if not WEBHOOK_URL:
-    raise RuntimeError("WEBHOOK_URL не задан")
-
-# Регистрируем webhook
-await application.bot.set_webhook(f"{WEBHOOK_URL}/webhook")
-    logger.info("Бот запущен (webhook mode)")
-
 @app.on_event("shutdown")
 async def on_shutdown():
     await application.stop()
