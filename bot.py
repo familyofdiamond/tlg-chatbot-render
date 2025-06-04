@@ -14,9 +14,12 @@ logger = logging.getLogger(__name__)
 
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 ADMIN_ID = os.environ.get("ADMIN_ID")  # как строка
+WEBHOOK_URL = os.environ.get("WEBHOOK_URL")
 
 if not BOT_TOKEN:
     raise RuntimeError("BOT_TOKEN не задан в окружении")
+if not WEBHOOK_URL:
+    raise RuntimeError("WEBHOOK_URL не задан в окружении")
 
 # DB
 conn = sqlite3.connect("chat_stats.db", check_same_thread=False)
@@ -229,6 +232,14 @@ application.add_handler(CommandHandler("menu", menu))
 application.add_handler(CallbackQueryHandler(handle_callback))
 application.add_handler(MessageHandler(filters.StatusUpdate.NEW_CHAT_MEMBERS, greet_user))
 application.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), count_messages))
+
+
+@app.on_event("startup")
+async def on_startup():
+    await application.initialize()
+    await application.start()
+    await application.bot.set_webhook(f"{WEBHOOK_URL}/webhook")
+    logger.info("Webhook установлен и бот запущен (webhook mode)")
 
 @app.on_event("shutdown")
 async def on_shutdown():
