@@ -1,44 +1,42 @@
+import os
 import logging
 import sqlite3
-import os
 import asyncio
 from fastapi import FastAPI, Request
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton
 from telegram.ext import (
-    ApplicationBuilder, CommandHandler, MessageHandler,
+    Application, CommandHandler, MessageHandler,
     CallbackQueryHandler, ContextTypes, filters
 )
 
-# Лог
+# Логирование
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # Переменные окружения
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 ADMIN_ID = os.environ.get("ADMIN_ID")
-WEBHOOK_URL = os.environ.get("WEBHOOK_URL")
+WEBHOOK_URL = os.environ.get("WEBHOOK_URL")  # Пример: https://your-app.onrender.com
 
 # БД
 conn = sqlite3.connect("chat_stats.db", check_same_thread=False)
 cursor = conn.cursor()
-cursor.execute("""
-    CREATE TABLE IF NOT EXISTS users (
-        user_id INTEGER PRIMARY KEY,
-        username TEXT,
-        message_count INTEGER DEFAULT 0,
-        language TEXT DEFAULT 'ru'
-    )
-""")
+cursor.execute("""CREATE TABLE IF NOT EXISTS users (
+    user_id INTEGER PRIMARY KEY,
+    username TEXT,
+    message_count INTEGER DEFAULT 0,
+    language TEXT DEFAULT 'ru'
+)""")
 conn.commit()
 
-# Языки
+# Языковые сообщения
 messages = {
     "ru": {
         "start": "👋 Привет! Я собираю статистику сообщений в группе. Нажми /menu, чтобы открыть меню.",
         "menu": "📋 Выберите действие:",
         "stats": "📊 Твоя статистика:\n\n👤 Имя: {name}\n💬 Сообщений: {count}",
         "name_hint": "Напиши команду /setname <твоё имя>",
-        "welcome": "👋 Добро пожаловать, {name}!\nЯ собираю статистику по участникам.",
+        "welcome": "👋 Добро пожаловать, {name}!",
         "language_set": "Язык изменён на русский 🇷🇺",
         "contact_admin": "📨 Связь с админом: @{admin_username}",
     },
@@ -47,13 +45,13 @@ messages = {
         "menu": "📋 Choose an option:",
         "stats": "📊 Your stats:\n\n👤 Name: {name}\n💬 Messages: {count}",
         "name_hint": "Type /setname <your name>",
-        "welcome": "👋 Welcome, {name}!\nI collect group message stats.",
+        "welcome": "👋 Welcome, {name}!",
         "language_set": "Language set to English 🇺🇸",
         "contact_admin": "📨 Contact admin: @{admin_username}",
     }
 }
 
-# Получить язык
+# Получить язык пользователя
 def get_user_language(user_id):
     cursor.execute("SELECT language FROM users WHERE user_id = ?", (user_id,))
     row = cursor.fetchone()
@@ -84,35 +82,16 @@ async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if row:
         name = row[0] or "не указано"
         count = row[1]
-        await update.message.reply_text(messages[lang]["stats"].format(name=name, count=count))
+        msg = messages[lang]["stats"].format(name=name, count=count)
+        await update.message.reply_text(msg)
     else:
         await update.message.reply_text("Нет данных.")
-
-async def fullstats(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if str(update.effective_user.id) != ADMIN_ID:
-        await update.message.reply_text("⛔ Только для админа.")
-        return
-    cursor.execute("SELECT username, message_count FROM users ORDER BY message_count DESC")
-    stats = cursor.fetchall()
-    text = "\n".join([f"{u or 'Без имени'} — {c} сообщений" for u, c in stats])
-    await update.message.reply_text(f"📊 Общая статистика:\n{text}")
 
 async def count_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     cursor.execute("INSERT OR IGNORE INTO users (user_id, username) VALUES (?, ?)", (user.id, user.full_name))
     cursor.execute("UPDATE users SET message_count = message_count + 1 WHERE user_id = ?", (user.id,))
     conn.commit()
-
-async def set_language(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    lang = context.args[0].lower() if context.args else "ru"
-    if lang not in ["ru", "en"]:
-        await update.message.reply_text("Доступные языки: ru, en")
-        return
-    cursor.execute("INSERT OR IGNORE INTO users (user_id) VALUES (?)", (user_id,))
-    cursor.execute("UPDATE users SET language = ? WHERE user_id = ?", (lang, user_id))
-    conn.commit()
-    await update.message.reply_text(messages[lang]["language_set"])
 
 async def menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     lang = get_user_language(update.effective_user.id)
@@ -123,16 +102,13 @@ async def menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [InlineKeyboardButton("🌐 Язык: RU 🇷🇺", callback_data="lang_en") if lang == "ru"
          else InlineKeyboardButton("🌐 Language: EN 🇺🇸", callback_data="lang_ru")]
     ]
-    await update.message.reply_text(
-        messages[lang]["menu"],
-        reply_markup=InlineKeyboardMarkup(keyboard)
-    )
+    await update.message.reply_text(messages[lang]["menu"], reply_markup=InlineKeyboardMarkup(keyboard))
 
 async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
+    await query.answer()
     user_id = query.from_user.id
     lang = get_user_language(user_id)
-    await query.answer()
 
     if query.data == "stats":
         cursor.execute("SELECT username, message_count FROM users WHERE user_id = ?", (user_id,))
@@ -141,14 +117,11 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             name = row[0] or "не указано"
             count = row[1]
             await query.message.reply_text(messages[lang]["stats"].format(name=name, count=count))
-
     elif query.data == "setname":
         await query.message.reply_text(messages[lang]["name_hint"])
-
     elif query.data == "contact":
-        admin_username = "your_admin_username"  # Замените
+        admin_username = "your_admin_username"  # Замените на актуальное имя
         await query.message.reply_text(messages[lang]["contact_admin"].format(admin_username=admin_username))
-
     elif query.data.startswith("lang_"):
         new_lang = query.data[-2:]
         cursor.execute("UPDATE users SET language = ? WHERE user_id = ?", (new_lang, user_id))
@@ -157,12 +130,9 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def greet_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
     for member in update.message.new_chat_members:
-        user_id = member.id
-        lang = get_user_language(user_id)
-        keyboard = [[InlineKeyboardButton("🚀 Начать", callback_data="stats")]]
+        lang = get_user_language(member.id)
         msg = await update.message.reply_text(
-            messages[lang]["welcome"].format(name=member.full_name),
-            reply_markup=InlineKeyboardMarkup(keyboard)
+            messages[lang]["welcome"].format(name=member.full_name)
         )
         await asyncio.sleep(30)
         try:
@@ -170,29 +140,29 @@ async def greet_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except:
             pass
 
-# --- Webhook блок (FastAPI) ---
+# === Webhook через FastAPI ===
 
-webhook_app = FastAPI()
-telegram_app = ApplicationBuilder().token(BOT_TOKEN).build()
+bot_app = FastAPI()
+application = Application.builder().token(BOT_TOKEN).build()
 
-telegram_app.add_handler(CommandHandler("start", start))
-telegram_app.add_handler(CommandHandler("setname", setname))
-telegram_app.add_handler(CommandHandler("stats", stats))
-telegram_app.add_handler(CommandHandler("fullstats", fullstats))
-telegram_app.add_handler(CommandHandler("language", set_language))
-telegram_app.add_handler(CommandHandler("menu", menu))
-telegram_app.add_handler(CallbackQueryHandler(handle_callback))
-telegram_app.add_handler(MessageHandler(filters.StatusUpdate.NEW_CHAT_MEMBERS, greet_user))
-telegram_app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), count_messages))
+application.add_handler(CommandHandler("start", start))
+application.add_handler(CommandHandler("setname", setname))
+application.add_handler(CommandHandler("stats", stats))
+application.add_handler(CommandHandler("menu", menu))
+application.add_handler(CallbackQueryHandler(handle_callback))
+application.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), count_messages))
+application.add_handler(MessageHandler(filters.StatusUpdate.NEW_CHAT_MEMBERS, greet_user))
 
-@webhook_app.on_event("startup")
+@bot_app.on_event("startup")
 async def on_startup():
-    await telegram_app.bot.set_webhook(WEBHOOK_URL)
-    logger.info(f"Webhook установлен: {WEBHOOK_URL}")
+    await application.initialize()
+    await application.start()
+    await application.bot.set_webhook(url=WEBHOOK_URL)
+    logging.info("Webhook установлен")
 
-@webhook_app.post("/")
-async def on_update(request: Request):
+@bot_app.post("/")
+async def receive_update(request: Request):
     data = await request.json()
-    update = Update.de_json(data, telegram_app.bot)
-    await telegram_app.process_update(update)
+    update = Update.de_json(data, application.bot)
+    await application.process_update(update)
     return {"ok": True}
