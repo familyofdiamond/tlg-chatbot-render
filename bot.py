@@ -2,6 +2,7 @@ import os
 import sqlite3
 import logging
 import asyncio
+import datetime
 from fastapi import FastAPI, Request, Response, HTTPException
 from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton
 from telegram.ext import (
@@ -13,7 +14,7 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
-ADMIN_ID = os.environ.get("ADMIN_ID")  # как строка
+ADMIN_ID = os.environ.get("ADMIN_ID")
 WEBHOOK_URL = os.environ.get("WEBHOOK_URL")
 
 if not BOT_TOKEN:
@@ -21,7 +22,7 @@ if not BOT_TOKEN:
 if not WEBHOOK_URL:
     raise RuntimeError("WEBHOOK_URL не задан в окружении")
 
-# DB
+# DB setup
 conn = sqlite3.connect("chat_stats.db", check_same_thread=False)
 cursor = conn.cursor()
 cursor.execute("""
@@ -31,6 +32,13 @@ CREATE TABLE IF NOT EXISTS users (
     message_count INTEGER DEFAULT 0,
     language TEXT DEFAULT 'ru',
     description TEXT DEFAULT ''
+)
+""")
+cursor.execute("""
+CREATE TABLE IF NOT EXISTS message_logs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER,
+    timestamp DATETIME
 )
 """)
 conn.commit()
@@ -48,7 +56,9 @@ messages = {
         "language_set": "Язык изменён на русский 🇷🇺",
         "contact_admin": "📨 Связь с админом: @{admin_username}",
         "only_admin": "⛔ Только для админа.",
-        "no_data": "Нет данных."
+        "no_data": "Нет данных.",
+        "choose_period": "📆 Выберите период:",
+        "top": "🏆 Топ пользователей ({period}):\n\n{list}"
     },
     "en": {
         "start": "👋 Hi! I track chat stats. Type /menu to open the menu.",
@@ -62,7 +72,9 @@ messages = {
         "language_set": "Language set to English 🇺🇸",
         "contact_admin": "📨 Contact admin: @{admin_username}",
         "only_admin": "⛔ Admins only.",
-        "no_data": "No data."
+        "no_data": "No data.",
+        "choose_period": "📆 Choose a period:",
+        "top": "🏆 Top users ({period}):\n\n{list}"
     }
 }
 
@@ -70,6 +82,31 @@ def get_user_language(user_id):
     cursor.execute("SELECT language FROM users WHERE user_id = ?", (user_id,))
     row = cursor.fetchone()
     return row[0] if row else "ru"
+
+def get_period_stats(period: str):
+    now = datetime.datetime.utcnow()
+    if period == "day":
+        since = now - datetime.timedelta(days=1)
+    elif period == "week":
+        since = now - datetime.timedelta(weeks=1)
+    elif period == "month":
+        since = now - datetime.timedelta(days=30)
+    else:
+        since = None
+
+    if since:
+        cursor.execute("""
+            SELECT u.username, COUNT(*) FROM message_logs m
+            JOIN users u ON u.user_id = m.user_id
+            WHERE m.timestamp >= ?
+            GROUP BY m.user_id ORDER BY COUNT(*) DESC LIMIT 10
+        """, (since,))
+    else:
+        cursor.execute("""
+            SELECT username, message_count FROM users
+            ORDER BY message_count DESC LIMIT 10
+        """)
+    return cursor.fetchall()
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     lang = get_user_language(update.effective_user.id)
@@ -141,12 +178,14 @@ async def count_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     cursor.execute("INSERT OR IGNORE INTO users (user_id, username) VALUES (?, ?)", (user.id, user.full_name))
     cursor.execute("UPDATE users SET message_count = message_count + 1 WHERE user_id = ?", (user.id,))
+    cursor.execute("INSERT INTO message_logs (user_id, timestamp) VALUES (?, ?)", (user.id, datetime.datetime.utcnow()))
     conn.commit()
 
 async def menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     lang = get_user_language(update.effective_user.id)
     keyboard = [
         [InlineKeyboardButton("📈 Моя статистика", callback_data="stats")],
+        [InlineKeyboardButton("🏆 Топ пользователей", callback_data="top")],
         [InlineKeyboardButton("📝 Указать имя", callback_data="setname")],
         [InlineKeyboardButton("🗑 Удалить имя", callback_data="delname")],
         [InlineKeyboardButton("🖊 Установить описание", callback_data="setdesc")],
@@ -176,6 +215,26 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             msg = messages[lang]["stats"].format(name=name, count=count, desc=desc)
             await query.message.reply_text(msg)
 
+    elif query.data == "top":
+        keyboard = [
+            [InlineKeyboardButton("📅 День", callback_data="top_day"),
+             InlineKeyboardButton("📆 Неделя", callback_data="top_week")],
+            [InlineKeyboardButton("🗓 Месяц", callback_data="top_month"),
+             InlineKeyboardButton("🌍 Всё время", callback_data="top_all")]
+        ]
+        await query.message.reply_text(messages[lang]["choose_period"], reply_markup=InlineKeyboardMarkup(keyboard))
+
+    elif query.data.startswith("top_"):
+        period = query.data[4:]
+        stats = get_period_stats(period)
+        if not stats:
+            await query.message.reply_text(messages[lang]["no_data"])
+        else:
+            text = "\n".join([f"{i+1}. {u or 'Без имени'} — {c}" for i, (u, c) in enumerate(stats)])
+            p_name = {"day": "день", "week": "неделя", "month": "месяц", "all": "всё время"} if lang == "ru" else \
+                     {"day": "day", "week": "week", "month": "month", "all": "all time"}
+            await query.message.reply_text(messages[lang]["top"].format(period=p_name[period], list=text))
+
     elif query.data == "setname":
         await query.message.reply_text(messages[lang]["name_hint"])
 
@@ -193,7 +252,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.message.reply_text(messages[lang]["deldesc_done"])
 
     elif query.data == "contact":
-        admin_username = "your_admin_username"  # Замените
+        admin_username = "your_admin_username"
         await query.message.reply_text(messages[lang]["contact_admin"].format(admin_username=admin_username))
 
     elif query.data.startswith("lang_"):
@@ -217,7 +276,7 @@ async def greet_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except:
             pass
 
-# FastAPI app
+# FastAPI + Telegram webhook
 app = FastAPI()
 application = ApplicationBuilder().token(BOT_TOKEN).build()
 
@@ -233,13 +292,12 @@ application.add_handler(CallbackQueryHandler(handle_callback))
 application.add_handler(MessageHandler(filters.StatusUpdate.NEW_CHAT_MEMBERS, greet_user))
 application.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), count_messages))
 
-
 @app.on_event("startup")
 async def on_startup():
     await application.initialize()
     await application.start()
     await application.bot.set_webhook(f"{WEBHOOK_URL}/webhook")
-    logger.info("Webhook установлен и бот запущен (webhook mode)")
+    logger.info("Webhook установлен и бот запущен")
 
 @app.on_event("shutdown")
 async def on_shutdown():
